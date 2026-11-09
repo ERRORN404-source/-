@@ -4,6 +4,8 @@ import Vision
 import Network
 import SwiftUI
 import Combine
+import UIKit
+import os
 
 public enum TransportMode {
     case udp
@@ -18,18 +20,34 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
     private let networkQueue = DispatchQueue(label: "com.vtuber.netQueue", qos: .userInteractive)
     private let visionQueue = DispatchQueue(label: "com.vtuber.visionQueue", qos: .userInitiated)
     
+    // Status & Telemetry
     @Published public var isStreaming: Bool = false
     @Published public var fps: Int = 0
+    @Published public var packetsSent: UInt64 = 0
     @Published public var currentHost: String = ""
     @Published public var mode: TransportMode = .udp
+    
+    // Configurable Settings
+    @Published public var enableHandTracking: Bool = true
+    @Published public var eyeSensitivity: Float = 1.0
+    @Published public var mouthSensitivity: Float = 1.0
+    
+    // Live Blendshape Telemetry for UI HUD
+    @Published public var liveJawOpen: Float = 0
+    @Published public var liveEyeBlinkLeft: Float = 0
+    @Published public var liveEyeBlinkRight: Float = 0
+    @Published public var liveMouthSmile: Float = 0
+    @Published public var liveHasLeftHand: Bool = false
+    @Published public var liveHasRightHand: Bool = false
     
     private var sequenceNumber: UInt16 = 0
     private var isVisionBusy = false
     private var fpsCounter = 0
     private var lastFpsDate = Date()
+    private var uiUpdateCounter = 0
     
-    private var leftHandJoints = [VTPJointData](repeating: VTPJointData(), count: 21)
-    private var rightHandJoints = [VTPJointData](repeating: VTPJointData(), count: 21)
+    private var leftHandJoints = [VTPJointData](<repeating: VTPJointData(>), count: 21)
+    private var rightHandJoints = [VTPJointData](<repeating: VTPJointData(>), count: 21)
     private var hasLeftHand = false
     private var hasRightHand = false
     private let handLock = os_unfair_lock_t.allocate(capacity: 1)
@@ -55,10 +73,8 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         if mode == .udp {
             params = NWParameters.udp
-            params.preferNoPath = true
         } else {
             params = NWParameters.tcp
-            params.preferNoPath = true
         }
         
         connection = NWConnection(host: endpoint, port: nwPort, using: params)
@@ -82,6 +98,7 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         UIApplication.shared.isIdleTimerDisabled = true
         self.isStreaming = true
+        self.packetsSent = 0
     }
     
     public func stop() {
@@ -96,11 +113,32 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
     public func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
         guard let faceAnchor = anchors.first as? ARFaceAnchor else { return }
         fpsCounter += 1
+        packetsSent &+= 1
         
         let timestamp = UInt64(session.currentFrame?.timestamp ?? ProcessInfo.processInfo.systemUptime * 1_000_000)
         
-        // Dispatch Apple Vision hand detection on Neural Engine without blocking 60 FPS ARKit loop
-        if let pixelBuffer = session.currentFrame?.capturedImage, !isVisionBusy {
+        // Update Live UI Telemetry at ~15 FPS
+        uiUpdateCounter += 1
+        if uiUpdateCounter % 4 == 0 {
+            let jaw = faceAnchor.blendShapes[.jawOpen]?.floatValue ?? 0
+            let blinkL = faceAnchor.blendShapes[.eyeBlinkLeft]?.floatValue ?? 0
+            let blinkR = faceAnchor.blendShapes[.eyeBlinkRight]?.floatValue ?? 0
+            let smileL = faceAnchor.blendShapes[.mouthSmileLeft]?.floatValue ?? 0
+            let smileR = faceAnchor.blendShapes[.mouthSmileRight]?.floatValue ?? 0
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.liveJawOpen = jaw
+                self.liveEyeBlinkLeft = blinkL
+                self.liveEyeBlinkRight = blinkR
+                self.liveMouthSmile = (smileL + smileR) * 0.5
+                self.liveHasLeftHand = self.hasLeftHand
+                self.liveHasRightHand = self.hasRightHand
+            }
+        }
+        
+        // Dispatch Apple Vision hand detection on Neural Engine if enabled
+        if enableHandTracking, let pixelBuffer = session.currentFrame?.capturedImage, !isVisionBusy {
             isVisionBusy = true
             visionQueue.async { [weak self] in
                 self?.processHandPose(pixelBuffer: pixelBuffer)
@@ -111,8 +149,8 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         os_unfair_lock_lock(handLock)
         let lHand = leftHandJoints
         let rHand = rightHandJoints
-        let hasL = hasLeftHand
-        let hasR = hasRightHand
+        let hasL = enableHandTracking ? hasLeftHand : false
+        let hasR = enableHandTracking ? hasRightHand : false
         os_unfair_lock_unlock(handLock)
         
         let packetData = VTPSerializer.shared.serialize(
@@ -140,8 +178,8 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         guard let observations = request.results else { return }
         
-        var tempLeft = [VTPJointData](repeating: VTPJointData(), count: 21)
-        var tempRight = [VTPJointData](repeating: VTPJointData(), count: 21)
+        var tempLeft = [VTPJointData](<repeating: VTPJointData(>), count: 21)
+        var tempRight = [VTPJointData](<repeating: VTPJointData(>), count: 21)
         var foundLeft = false
         var foundRight = false
         
@@ -156,7 +194,7 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         for observation in observations {
             let isRight = (observation.chirality == .right)
-            var extracted = [VTPJointData](repeating: VTPJointData(), count: 21)
+            var extracted = [VTPJointData](<repeating: VTPJointData(>), count: 21)
             
             for (idx, jointKey) in jointKeys.enumerated() {
                 if let pt = try? observation.recognizedPoint(jointKey), pt.confidence > 0.15 {
