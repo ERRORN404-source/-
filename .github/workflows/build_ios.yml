@@ -1,0 +1,50 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        working-directory: FOR_GITHUB/ios
+        run: xcodegen generate
+
+      - name: Build iOS Application (.app)
+        working-directory: FOR_GITHUB/ios
+        run: |
+          xcodebuild build \
+            -project VTuberTracker.xcodeproj \
+            -scheme VTuberTracker \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Package into IPA
+        working-directory: FOR_GITHUB/ios
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/VTuberTracker.app Payload/
+          zip -r VTuberTracker.ipa Payload
+          echo "IPA packaging complete!"
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VTuberTracker-IPA
+          path: FOR_GITHUB/ios/VTuberTracker.ipa
+          retention-days: 7
