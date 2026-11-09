@@ -24,6 +24,8 @@
     <string>TrueDepth front camera is required for real-time 60 FPS face and hand tracking.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Local network access is required to transmit UDP tracking frames to the Windows PC host.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Bluetooth is used to stream low-latency tracking telemetry directly to your PC.</string>
     <key>UIRequiredDeviceCapabilities</key>
     <array>
         <string>armv7</string>

@@ -19,6 +19,9 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "TrueDepth front camera is required for real-time 60 FPS face and hand tracking."
+        NSLocalNetworkUsageDescription: "Local network access is required to transmit UDP tracking frames to the Windows PC host."
+        NSBluetoothAlwaysUsageDescription: "Bluetooth is used to stream low-latency tracking telemetry directly to your PC."
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.vtuber.tracker
@@ -28,3 +31,4 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         ENABLE_BITCODE: NO
         SWIFT_VERSION: "5.9"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

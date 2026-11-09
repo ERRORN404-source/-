@@ -6,13 +6,28 @@ import SwiftUI
 import Combine
 import UIKit
 import os
+import AVFoundation
+import CoreBluetooth
 
-public enum TransportMode {
-    case udp
-    case usbTcp
+public enum ConnectionType: String, CaseIterable, Identifiable {
+    case usb = "USB Провод"
+    case wifi = "Wi-Fi (LAN)"
+    case internet = "Интернет (WAN)"
+    case bluetooth = "Bluetooth"
+    
+    public var id: String { rawValue }
+    
+    public var icon: String {
+        switch self {
+        case .usb: return "cable.connector"
+        case .wifi: return "wifi"
+        case .internet: return "globe"
+        case .bluetooth: return "antenna.radiowaves.left.and.right"
+        }
+    }
 }
 
-public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegate {
+public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegate, CBPeripheralManagerDelegate {
     public static let shared = TrackingManager()
     
     public let session = ARSession()
@@ -20,12 +35,19 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
     private let networkQueue = DispatchQueue(label: "com.vtuber.netQueue", qos: .userInteractive)
     private let visionQueue = DispatchQueue(label: "com.vtuber.visionQueue", qos: .userInitiated)
     
+    // CoreBluetooth Peripheral for direct wireless PC pairing
+    private var peripheralManager: CBPeripheralManager?
+    private var transferCharacteristic: CBMutableCharacteristic?
+    public static let serviceUUID = CBUUID(string: "7F3D0001-B123-4C5D-9E8F-0A1B2C3D4E5F")
+    public static let charUUID    = CBUUID(string: "7F3D0002-B123-4C5D-9E8F-0A1B2C3D4E5F")
+    
     // Status & Telemetry
     @Published public var isStreaming: Bool = false
     @Published public var fps: Int = 0
     @Published public var packetsSent: UInt64 = 0
     @Published public var currentHost: String = ""
-    @Published public var mode: TransportMode = .udp
+    @Published public var activeConnection: ConnectionType = .wifi
+    @Published public var cameraPermissionDenied: Bool = false
     
     // Configurable Settings
     @Published public var enableHandTracking: Bool = true
@@ -63,26 +85,80 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         }
     }
     
-    public func start(host: String, port: UInt16, mode: TransportMode = .udp) {
-        self.currentHost = host
-        self.mode = mode
+    public func start(connectionType: ConnectionType, host: String, port: UInt16) {
+        self.activeConnection = connectionType
         
-        let endpoint = NWEndpoint.Host(host)
-        let nwPort = NWEndpoint.Port(rawValue: port)!
-        let params: NWParameters
+        // Check Camera Permissions Safely
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        switch status {
+        case .authorized:
+            DispatchQueue.main.async { [weak self] in
+                self?.startInternal(connectionType: connectionType, host: host, port: port)
+            }
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.cameraPermissionDenied = false
+                        self?.startInternal(connectionType: connectionType, host: host, port: port)
+                    } else {
+                        self?.cameraPermissionDenied = true
+                        print("[Error] Camera permission denied")
+                    }
+                }
+            }
+        case .denied, .restricted:
+            DispatchQueue.main.async { [weak self] in
+                self?.cameraPermissionDenied = true
+            }
+        @unknown default:
+            break
+        }
+    }
+    
+    private func startInternal(connectionType: ConnectionType, host: String, port: UInt16) {
+        self.cameraPermissionDenied = false
         
-        if mode == .udp {
-            params = NWParameters.udp
-        } else {
-            params = NWParameters.tcp
+        // Determine Target Host and Transport Protocol
+        var targetHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        var useTcp = false
+        
+        switch connectionType {
+        case .usb:
+            targetHost = "127.0.0.1"
+            useTcp = true
+        case .wifi:
+            if targetHost.isEmpty { targetHost = "192.168.1.100" }
+            useTcp = false
+        case .internet:
+            if targetHost.isEmpty { targetHost = "127.0.0.1" }
+            useTcp = false
+        case .bluetooth:
+            // Start Bluetooth Peripheral Mode
+            if peripheralManager == nil {
+                peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
+            } else if peripheralManager?.state == .poweredOn {
+                startBluetoothAdvertising()
+            }
+            // Bluetooth PAN interface also supports localhost / direct IP
+            if targetHost.isEmpty { targetHost = "172.20.10.1" }
+            useTcp = false
         }
         
-        connection = NWConnection(host: endpoint, port: nwPort, using: params)
-        connection?.stateUpdateHandler = { state in
-            print("[Tracker Network] State: \(state)")
-        }
-        connection?.start(queue: networkQueue)
+        self.currentHost = targetHost
         
+        // Start Network Connection
+        let endpoint = NWEndpoint.Host(targetHost)
+        if let nwPort = NWEndpoint.Port(rawValue: port) {
+            let params: NWParameters = useTcp ? .tcp : .udp
+            connection = NWConnection(host: endpoint, port: nwPort, using: params)
+            connection?.stateUpdateHandler = { state in
+                print("[Tracker Network] State: \(state)")
+            }
+            connection?.start(queue: networkQueue)
+        }
+        
+        // Start ARKit Face Tracking Session
         guard ARFaceTrackingConfiguration.isSupported else {
             print("[Error] ARFaceTracking is not supported on this device")
             return
@@ -90,8 +166,7 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         let config = ARFaceTrackingConfiguration()
         config.isLightEstimationEnabled = false
-        config.providesAudioData = false
-        config.worldAlignment = .camera
+        // DO NOT set worldAlignment (.camera is invalid for face tracking and causes crash)
         
         session.delegate = self
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
@@ -105,8 +180,43 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         session.pause()
         connection?.cancel()
         connection = nil
+        
+        if peripheralManager?.isAdvertising == true {
+            peripheralManager?.stopAdvertising()
+        }
+        
         isStreaming = false
         UIApplication.shared.isIdleTimerDisabled = false
+    }
+    
+    // MARK: - Bluetooth Peripheral Management
+    public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        if peripheral.state == .poweredOn && activeConnection == .bluetooth {
+            startBluetoothAdvertising()
+        }
+    }
+    
+    private func startBluetoothAdvertising() {
+        guard let pm = peripheralManager, pm.state == .poweredOn else { return }
+        
+        let char = CBMutableCharacteristic(
+            type: Self.charUUID,
+            properties: [.notify, .read],
+            value: nil,
+            permissions: [.readable]
+        )
+        self.transferCharacteristic = char
+        
+        let service = CBMutableService(type: Self.serviceUUID, primary: true)
+        service.characteristics = [char]
+        
+        pm.removeAllServices()
+        pm.add(service)
+        
+        pm.startAdvertising([
+            CBAdvertisementDataServiceUUIDsKey: [Self.serviceUUID],
+            CBAdvertisementDataLocalNameKey: "VTuberTracker"
+        ])
     }
     
     // MARK: - ARSessionDelegate 60 FPS
@@ -165,7 +275,13 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         sequenceNumber = sequenceNumber &+ 1
         
+        // 1. Send via Network (UDP/TCP)
         connection?.send(content: packetData, completion: .idempotent)
+        
+        // 2. If Bluetooth mode active, notify subscribed Bluetooth centrals
+        if activeConnection == .bluetooth, let pm = peripheralManager, let char = transferCharacteristic {
+            pm.updateValue(packetData, for: char, onSubscribedCentrals: nil)
+        }
     }
     
     // MARK: - Vision Hand Pose Detection

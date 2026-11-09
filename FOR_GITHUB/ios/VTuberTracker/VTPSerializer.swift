@@ -92,7 +92,7 @@ public final class VTPSerializer {
             withUnsafeBytes(of: &rPitch) { buffer.append(contentsOf: $0) }
             withUnsafeBytes(of: &rYaw)   { buffer.append(contentsOf: $0) }
         } else {
-            buffer.append(contentsOf: [UInt8](repeating: 0, count: 24))
+            buffer.append(contentsOf: Array(repeating: UInt8(0), count: 24))
         }
         
         // 7. 52 Blendshapes: 52 bytes
