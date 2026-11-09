@@ -46,8 +46,8 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
     private var lastFpsDate = Date()
     private var uiUpdateCounter = 0
     
-    private var leftHandJoints = [VTPJointData](<repeating: VTPJointData(>), count: 21)
-    private var rightHandJoints = [VTPJointData](<repeating: VTPJointData(>), count: 21)
+    private var leftHandJoints = Array(repeating: VTPJointData(), count: 21)
+    private var rightHandJoints = Array(repeating: VTPJointData(), count: 21)
     private var hasLeftHand = false
     private var hasRightHand = false
     private let handLock = os_unfair_lock_t.allocate(capacity: 1)
@@ -178,8 +178,8 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         guard let observations = request.results else { return }
         
-        var tempLeft = [VTPJointData](<repeating: VTPJointData(>), count: 21)
-        var tempRight = [VTPJointData](<repeating: VTPJointData(>), count: 21)
+        var tempLeft = Array(repeating: VTPJointData(), count: 21)
+        var tempRight = Array(repeating: VTPJointData(), count: 21)
         var foundLeft = false
         var foundRight = false
         
@@ -194,7 +194,7 @@ public final class TrackingManager: NSObject, ObservableObject, ARSessionDelegat
         
         for observation in observations {
             let isRight = (observation.chirality == .right)
-            var extracted = [VTPJointData](<repeating: VTPJointData(>), count: 21)
+            var extracted = Array(repeating: VTPJointData(), count: 21)
             
             for (idx, jointKey) in jointKeys.enumerated() {
                 if let pt = try? observation.recognizedPoint(jointKey), pt.confidence > 0.15 {
